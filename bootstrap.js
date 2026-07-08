@@ -20,6 +20,10 @@ var Zoro = {
 	// Pref (full name) holding the folder where figure images are written.
 	IMAGE_FOLDER_PREF: "extensions.zoro.imageFolder",
 
+	// Figure embeds are scaled to this fraction of the image's natural width
+	// (0.5 = half size / "50% smaller"). Set to 1 to embed at full size.
+	IMAGE_SCALE: 0.5,
+
 	// Map each Zotero annotation color to a semantic label. Keys are lowercase
 	// hex. Zotero's defaults: green #5fb236, blue #2ea8e5, yellow #ffd400,
 	// red #ff6666, purple #a28ae5, magenta #e56eee, orange #f19837, gray #aaaaaa.
@@ -263,7 +267,11 @@ var Zoro = {
 
 			if (a.annotationType === "image") {
 				const img = imageMap[a.key];
-				if (img) lines.push(`![[${img.name}]]`);
+				if (img) {
+					lines.push(img.width
+						? `![[${img.name}|${img.width}]]`
+						: `![[${img.name}]]`);
+				}
 			}
 			else {
 				const text = (a.annotationText || "").trim();
@@ -321,7 +329,8 @@ var Zoro = {
 			if (a.annotationType === "image") {
 				const img = imageMap[a.key];
 				if (img) {
-					block += `<img src="${this.fileUrl(img.path)}" alt="figure" `
+					const wattr = img.width ? ` width="${img.width}"` : "";
+					block += `<img src="${this.fileUrl(img.path)}" alt="figure"${wattr} `
 						+ `style="max-width:100%;">`;
 				}
 			}
@@ -747,7 +756,10 @@ var Zoro = {
 				const name = `${base}-p${page}-${a.key}.png`;
 				const dest = PathUtils.join(folder, name);
 				await IOUtils.copy(src, dest);
-				map[a.key] = { name, path: dest };
+				let width = null;
+				try { width = await this.pngScaledWidth(dest); }
+				catch (e) { /* embed without an explicit width */ }
+				map[a.key] = { name, path: dest, width };
 			}
 			catch (e) {
 				this.log("failed to save image for " + a.key + ": " + e);
@@ -756,6 +768,19 @@ var Zoro = {
 
 		this.log(`saved ${Object.keys(map).length}/${images.length} figure image(s)`);
 		return map;
+	},
+
+	// Read a PNG's natural width from its IHDR header and scale it by
+	// IMAGE_SCALE. Returns a pixel width, or null if it can't be determined.
+	async pngScaledWidth(path) {
+		const bytes = await IOUtils.read(path, { maxBytes: 24 });
+		// PNG signature + IHDR: width is a big-endian uint32 at offset 16.
+		if (bytes.length >= 24 && bytes[0] === 0x89 && bytes[1] === 0x50) {
+			const w = (bytes[16] * 0x1000000) + (bytes[17] << 16)
+				+ (bytes[18] << 8) + bytes[19];
+			if (w > 0) return Math.max(1, Math.round(w * this.IMAGE_SCALE));
+		}
+		return null;
 	},
 
 	async getImageFolder(window, promptIfMissing) {

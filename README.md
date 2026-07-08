@@ -71,7 +71,7 @@ stable since Zotero 7).
 **Comment:** revisit this
 
 ### Definition — Page 14
-![[The Selfish Gene-p14-ABCD1234.png]]
+![[The Selfish Gene-p14-ABCD1234.png|320]]
 
 **Comment:** replicator diagram
 ```
@@ -120,7 +120,9 @@ A brief popup confirms how many annotations were copied.
    attachments folder** so the `![[…]]` embeds resolve. The choice is remembered;
    change it later via **Zoro → Set figure image folder…**.
 3. Export as usual. Each figure is copied into that folder and embedded in the
-   Markdown as `![[<pdf title>-p<page>-<key>.png]]`.
+   Markdown as `![[<pdf title>-p<page>-<key>.png|<width>]]`. By default figures
+   are embedded at **50%** of their natural width; change `IMAGE_SCALE` in
+   `bootstrap.js` (e.g. `1` for full size).
 
 Text‑only exports never touch the filesystem or prompt for a folder.
 
