@@ -192,16 +192,20 @@ var Zoro = {
 					"This PDF has no table-of-contents outline, so there are no sections to choose from.");
 				return;
 			}
-			const idx = await this.promptSection(window, sectionMap);
-			if (idx === null) return; // cancelled
-			chosenTitle = sectionMap[idx].title;
-			const range = this.sectionRange(sectionMap, idx);
+			const indices = await this.promptSections(window, sectionMap);
+			if (!indices || indices.length === 0) return; // cancelled / nothing picked
+
+			const ranges = indices.map((i) => this.sectionRange(sectionMap, i));
 			selected = wanted.filter((a) => {
 				const p = this.pageIndexOf(a);
-				return p !== null && p >= range.start && p < range.end;
+				return p !== null && ranges.some((r) => p >= r.start && p < r.end);
 			});
+			chosenTitle = indices.length === 1
+				? sectionMap[indices[0]].title
+				: `${indices.length} sections`;
+
 			if (selected.length === 0) {
-				this.popup(window, "Zoro", `No annotations in "${chosenTitle}".`);
+				this.popup(window, "Zoro", `No annotations in the selected section(s).`);
 				return;
 			}
 		}
@@ -527,6 +531,136 @@ var Zoro = {
 			else break;
 		}
 		return current;
+	},
+
+	// Multi-select picker. Returns an array of chosen indices into sectionMap,
+	// or null if cancelled. Uses a custom resizable dialog with checkboxes;
+	// falls back to the single-select prompt if that can't be shown.
+	async promptSections(window, sectionMap) {
+		try {
+			return await this._sectionDialog(window, sectionMap);
+		}
+		catch (e) {
+			this.log("custom section dialog failed, using single-select: " + e);
+			const idx = await this.promptSection(window, sectionMap);
+			return idx === null ? null : [idx];
+		}
+	},
+
+	_sectionDialog(window, sectionMap) {
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const done = (val) => { if (!settled) { settled = true; resolve(val); } };
+
+			let dlg;
+			try {
+				dlg = window.openDialog(
+					"about:blank", "zoro-sections",
+					"chrome,dialog,resizable,centerscreen,width=580,height=720"
+				);
+			}
+			catch (e) { reject(e); return; }
+			if (!dlg) { reject(new Error("openDialog returned null")); return; }
+
+			const build = () => {
+				try {
+					const doc = dlg.document;
+					doc.title = "Zoro — Export sections";
+					const b = doc.body;
+					b.style.margin = "0";
+					b.style.height = "100vh";
+					b.style.display = "flex";
+					b.style.flexDirection = "column";
+					b.style.font = "13px sans-serif";
+					b.style.color = "CanvasText";
+					b.style.background = "Canvas";
+					b.style.colorScheme = "light dark";
+
+					const header = doc.createElement("div");
+					header.textContent =
+						"Choose one or more sections to export (subsections are included):";
+					header.style.padding = "10px 12px";
+					b.appendChild(header);
+
+					const listWrap = doc.createElement("div");
+					listWrap.style.flex = "1";
+					listWrap.style.overflow = "auto";
+					listWrap.style.borderTop = "1px solid #8886";
+					listWrap.style.borderBottom = "1px solid #8886";
+					listWrap.style.padding = "6px 12px";
+					b.appendChild(listWrap);
+
+					const checkboxes = [];
+					sectionMap.forEach((e, i) => {
+						const row = doc.createElement("label");
+						row.style.display = "block";
+						row.style.padding = "3px 0";
+						row.style.whiteSpace = "nowrap";
+						const cb = doc.createElement("input");
+						cb.type = "checkbox";
+						cb.value = String(i);
+						cb.style.marginRight = "8px";
+						cb.style.marginLeft = (e.depth * 20) + "px";
+						row.appendChild(cb);
+						row.appendChild(
+							doc.createTextNode(`${e.title}  (p.${e.pageIndex + 1})`));
+						listWrap.appendChild(row);
+						checkboxes.push(cb);
+					});
+
+					const footer = doc.createElement("div");
+					footer.style.display = "flex";
+					footer.style.justifyContent = "space-between";
+					footer.style.padding = "10px 12px";
+
+					const left = doc.createElement("div");
+					const selAll = doc.createElement("button");
+					selAll.textContent = "Select all";
+					selAll.onclick = () => checkboxes.forEach((c) => { c.checked = true; });
+					const selNone = doc.createElement("button");
+					selNone.textContent = "Clear";
+					selNone.style.marginLeft = "6px";
+					selNone.onclick = () => checkboxes.forEach((c) => { c.checked = false; });
+					left.appendChild(selAll);
+					left.appendChild(selNone);
+
+					const right = doc.createElement("div");
+					const cancel = doc.createElement("button");
+					cancel.textContent = "Cancel";
+					cancel.onclick = () => { done(null); dlg.close(); };
+					const ok = doc.createElement("button");
+					ok.textContent = "Export";
+					ok.style.marginLeft = "6px";
+					ok.style.fontWeight = "bold";
+					ok.onclick = () => {
+						const idx = checkboxes
+							.filter((c) => c.checked)
+							.map((c) => parseInt(c.value, 10));
+						done(idx);
+						dlg.close();
+					};
+					right.appendChild(cancel);
+					right.appendChild(ok);
+
+					footer.appendChild(left);
+					footer.appendChild(right);
+					b.appendChild(footer);
+
+					dlg.addEventListener("unload", () => done(null));
+				}
+				catch (e) {
+					reject(e);
+					try { dlg.close(); } catch (_) { /* ignore */ }
+				}
+			};
+
+			if (dlg.document && dlg.document.readyState === "complete") {
+				build();
+			}
+			else {
+				dlg.addEventListener("load", build, { once: true });
+			}
+		});
 	},
 
 	// Show the outline as a picker; returns the chosen index into sectionMap

@@ -45,8 +45,9 @@ stable since Zotero 7).
 - **Export need clarifications** (red only)
 - **Export questions** — any annotation, regardless of color, whose **comment
   contains one or more `?`**
-- **Export from a section…** — pick a chapter/section/subsection from the PDF's
-  outline and export only that part (nested subsections included)
+- **Export from a section…** — a resizable dialog lists the PDF's outline with a
+  checkbox per heading; tick **one or more** chapters/sections/subsections (with
+  "Select all"/"Clear") and export only those parts (nested subsections included)
 - **Set figure image folder…** — choose where exported figure PNGs are written
 
 ---
