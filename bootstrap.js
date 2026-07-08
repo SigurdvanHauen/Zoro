@@ -43,6 +43,7 @@ var Zoro = {
 		{ label: "Export need clarifications", color: "#ff6666" },
 		{ separator: true },
 		{ label: "Export questions", questions: true },
+		{ label: "Export from a section…", chooseSection: true },
 		{ separator: true },
 		{ label: "Set figure image folder…", action: "setFolder" },
 	],
@@ -121,7 +122,8 @@ var Zoro = {
 
 	// spec: a filter from MENU_ITEMS. {} exports every highlight/underline;
 	// { color } restricts to a Zotero color; { questions: true } restricts to
-	// annotations whose comment contains a "?".
+	// annotations whose comment contains a "?"; { chooseSection: true } prompts
+	// for an outline section and exports only that section (and its subsections).
 	async exportCurrent(window, spec) {
 		spec = spec || {};
 		const Zotero_Tabs = window.Zotero_Tabs;
@@ -181,26 +183,50 @@ var Zoro = {
 			this.log("section map failed: " + e + "\n" + (e && e.stack));
 		}
 
+		// Restrict to a single outline section (plus its subsections) if asked.
+		let selected = wanted;
+		let chosenTitle = "";
+		if (spec.chooseSection) {
+			if (!sectionMap || !sectionMap.length) {
+				this.popup(window, "Zoro",
+					"This PDF has no table-of-contents outline, so there are no sections to choose from.");
+				return;
+			}
+			const idx = await this.promptSection(window, sectionMap);
+			if (idx === null) return; // cancelled
+			chosenTitle = sectionMap[idx].title;
+			const range = this.sectionRange(sectionMap, idx);
+			selected = wanted.filter((a) => {
+				const p = this.pageIndexOf(a);
+				return p !== null && p >= range.start && p < range.end;
+			});
+			if (selected.length === 0) {
+				this.popup(window, "Zoro", `No annotations in "${chosenTitle}".`);
+				return;
+			}
+		}
+		const wantedFinal = selected;
+
 		// Save any figure/area annotation images to the configured folder.
 		let imageMap = {};
 		try {
-			imageMap = await this.saveImages(wanted, attachment, window);
+			imageMap = await this.saveImages(wantedFinal, attachment, window);
 		}
 		catch (e) {
 			this.log("saving images failed: " + e + "\n" + (e && e.stack));
 		}
 
-		const plain = this.buildMarkdown(attachment, wanted, sectionMap, imageMap);
-		const html = this.buildHtml(attachment, wanted, sectionMap, imageMap);
+		const plain = this.buildMarkdown(attachment, wantedFinal, sectionMap, imageMap);
+		const html = this.buildHtml(attachment, wantedFinal, sectionMap, imageMap);
 		this.copyRichText(html, plain);
 
-		const sectionNote = sectionMap && sectionMap.length
-			? ` (with sections)`
-			: "";
+		const sectionNote = chosenTitle
+			? ` from "${chosenTitle}"`
+			: (sectionMap && sectionMap.length ? ` (with sections)` : "");
 		this.popup(
 			window,
 			"Zoro",
-			`Copied ${wanted.length} annotation${wanted.length === 1 ? "" : "s"} to the clipboard${sectionNote}.`
+			`Copied ${wantedFinal.length} annotation${wantedFinal.length === 1 ? "" : "s"} to the clipboard${sectionNote}.`
 		);
 	},
 
@@ -501,6 +527,48 @@ var Zoro = {
 			else break;
 		}
 		return current;
+	},
+
+	// Show the outline as a picker; returns the chosen index into sectionMap
+	// (in page order) or null if cancelled. Titles are indented by depth.
+	async promptSection(window, sectionMap) {
+		const list = sectionMap.map((e) =>
+			`${"    ".repeat(e.depth)}${e.title}  (p.${e.pageIndex + 1})`
+		);
+		const prompts = (typeof Services !== "undefined" && Services.prompt)
+			? Services.prompt
+			: Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
+				.getService(Components.interfaces.nsIPromptService);
+
+		const out = { value: 0 };
+		const title = "Zoro — Export from section";
+		const text = "Choose a section to export (includes its subsections):";
+
+		let ok;
+		try {
+			// Classic scriptable signature includes the count argument.
+			ok = prompts.select(window, title, text, list.length, list, out);
+		}
+		catch (e) {
+			// Newer Gecko dropped the count argument.
+			ok = prompts.select(window, title, text, list, out);
+		}
+		return ok ? out.value : null;
+	},
+
+	// Page range [start, end) covered by the section at sectionMap[idx],
+	// extending until the next heading at the same or shallower depth so that
+	// nested subsections are included.
+	sectionRange(sectionMap, idx) {
+		const chosen = sectionMap[idx];
+		let end = Infinity;
+		for (let i = idx + 1; i < sectionMap.length; i++) {
+			if (sectionMap[i].depth <= chosen.depth) {
+				end = sectionMap[i].pageIndex;
+				break;
+			}
+		}
+		return { start: chosen.pageIndex, end };
 	},
 
 	// ---- Figure / image annotations -------------------------------------

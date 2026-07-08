@@ -45,6 +45,8 @@ stable since Zotero 7).
 - **Export need clarifications** (red only)
 - **Export questions** — any annotation, regardless of color, whose **comment
   contains one or more `?`**
+- **Export from a section…** — pick a chapter/section/subsection from the PDF's
+  outline and export only that part (nested subsections included)
 - **Set figure image folder…** — choose where exported figure PNGs are written
 
 ---
