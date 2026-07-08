@@ -753,12 +753,27 @@ var Zoro = {
 					continue;
 				}
 				const page = a.annotationPageLabel || this.pageFromPosition(a) || "x";
-				const name = `${base}-p${page}-${a.key}.png`;
+
+				// Detect the format + natural size so the embed can be scaled.
+				let info = { format: "", width: 0, height: 0 };
+				try {
+					const header = await IOUtils.read(src, { maxBytes: 65536 });
+					info = this.imageSize(header);
+				}
+				catch (e) {
+					this.log("could not read image header for " + a.key + ": " + e);
+				}
+
+				const ext = info.format === "jpeg" ? "jpg" : "png";
+				const name = `${base}-p${page}-${a.key}.${ext}`;
 				const dest = PathUtils.join(folder, name);
 				await IOUtils.copy(src, dest);
-				let width = null;
-				try { width = await this.pngScaledWidth(dest); }
-				catch (e) { /* embed without an explicit width */ }
+
+				const width = info.width > 0
+					? Math.max(1, Math.round(info.width * this.IMAGE_SCALE))
+					: null;
+				this.log(`image ${a.key}: format=${info.format || "?"} `
+					+ `natW=${info.width} scaledW=${width}`);
 				map[a.key] = { name, path: dest, width };
 			}
 			catch (e) {
@@ -770,17 +785,43 @@ var Zoro = {
 		return map;
 	},
 
-	// Read a PNG's natural width from its IHDR header and scale it by
-	// IMAGE_SCALE. Returns a pixel width, or null if it can't be determined.
-	async pngScaledWidth(path) {
-		const bytes = await IOUtils.read(path, { maxBytes: 24 });
-		// PNG signature + IHDR: width is a big-endian uint32 at offset 16.
-		if (bytes.length >= 24 && bytes[0] === 0x89 && bytes[1] === 0x50) {
+	// Detect image format and natural pixel dimensions from the leading bytes.
+	// Supports PNG and JPEG (the two formats Zotero uses for annotation images).
+	// Returns { format, width, height }; width/height are 0 if undetermined.
+	imageSize(bytes) {
+		// PNG: 8-byte signature, then IHDR with width/height as big-endian uint32.
+		if (bytes.length >= 24
+			&& bytes[0] === 0x89 && bytes[1] === 0x50
+			&& bytes[2] === 0x4E && bytes[3] === 0x47) {
 			const w = (bytes[16] * 0x1000000) + (bytes[17] << 16)
 				+ (bytes[18] << 8) + bytes[19];
-			if (w > 0) return Math.max(1, Math.round(w * this.IMAGE_SCALE));
+			const h = (bytes[20] * 0x1000000) + (bytes[21] << 16)
+				+ (bytes[22] << 8) + bytes[23];
+			return { format: "png", width: w, height: h };
 		}
-		return null;
+
+		// JPEG: scan segments for a Start-Of-Frame marker (SOFn).
+		if (bytes.length > 4 && bytes[0] === 0xFF && bytes[1] === 0xD8) {
+			let off = 2;
+			while (off + 9 < bytes.length) {
+				if (bytes[off] !== 0xFF) { off++; continue; }
+				const marker = bytes[off + 1];
+				if (marker === 0xFF) { off++; continue; }
+				const isSOF = marker >= 0xC0 && marker <= 0xCF
+					&& marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC;
+				if (isSOF) {
+					const h = (bytes[off + 5] << 8) + bytes[off + 6];
+					const w = (bytes[off + 7] << 8) + bytes[off + 8];
+					return { format: "jpeg", width: w, height: h };
+				}
+				const len = (bytes[off + 2] << 8) + bytes[off + 3];
+				if (len < 2) break;
+				off += 2 + len;
+			}
+			return { format: "jpeg", width: 0, height: 0 };
+		}
+
+		return { format: "", width: 0, height: 0 };
 	},
 
 	async getImageFolder(window, promptIfMissing) {

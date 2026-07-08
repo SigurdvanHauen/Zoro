@@ -1,7 +1,7 @@
 {
 	"manifest_version": 2,
 	"name": "Zoro Annotation Exporter",
-	"version": "1.11.0",
+	"version": "1.12.0",
 	"description": "Export highlighted/underlined text, comments, and colors from the currently open PDF to the clipboard as Markdown.",
 	"author": "Sigurd",
 	"applications": {
