@@ -1,0 +1,8 @@
+# OS / editor cruft
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+
+# Intermediate build zip (the packaged .xpi in build/ is kept in the repo)
+build/*.zip
