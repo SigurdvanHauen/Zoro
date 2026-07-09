@@ -51,6 +51,8 @@ stable since Zotero 7).
   The same dialog has **Category** checkboxes (Study note / Definition / Minor
   question / Need clarification) to further limit the export to one or more
   categories — leave them all unchecked to include every category.
+- **Sync current PDF to a Markdown file…** — incrementally sync annotations into
+  a `.md` file **without disturbing your own edits** (see below)
 - **Set figure image folder…** — choose where exported figure PNGs are written
 
 ---
@@ -128,6 +130,37 @@ A brief popup confirms how many annotations were copied.
    `bootstrap.js` (e.g. `1` for full size).
 
 Text‑only exports never touch the filesystem or prompt for a folder.
+
+### Syncing to a Markdown file (keeps your edits)
+
+The clipboard export replaces whatever you paste over. If instead you keep a note
+per PDF and want to **enrich it with your own text, tables and images**, use
+**Zoro → Sync current PDF to a Markdown file…**.
+
+- The first time, you pick (or create) the `.md` file for that PDF; the choice is
+  remembered per PDF.
+- Each sync **adds** new annotations, **removes** annotations you deleted in
+  Zotero, and **updates** ones whose comment/text/color changed.
+- **Your own content is preserved.** Every annotation is written inside invisible
+  markers:
+
+  ```markdown
+  <!-- zoro:ABCD1234 -->
+  ### Study note — Page 12 — 2.3.1 Risk
+  > highlighted text
+  **Comment:** core thesis
+  <!-- /zoro:ABCD1234 -->
+  ```
+
+  Anything **outside** these markers — your paragraphs, tables, images — is never
+  touched. New annotations are inserted in reading order next to their neighbours.
+
+> **One rule:** don't edit *inside* a marked block — it is regenerated from Zotero
+> on the next sync. Write your own notes *between* blocks. The markers are hidden
+> in Obsidian's reading view.
+
+Removing an annotation removes its block (and its figure embed) but leaves the
+PNG file on disk.
 
 ---
 

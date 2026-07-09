@@ -24,6 +24,9 @@ var Zoro = {
 	// (0.5 = half size / "50% smaller"). Set to 1 to embed at full size.
 	IMAGE_SCALE: 0.5,
 
+	// Pref prefix (full name) for remembering each PDF's synced Markdown file.
+	SYNC_FILE_PREF_PREFIX: "extensions.zoro.syncFile.",
+
 	// Map each Zotero annotation color to a semantic label. Keys are lowercase
 	// hex. Zotero's defaults: green #5fb236, blue #2ea8e5, yellow #ffd400,
 	// red #ff6666, purple #a28ae5, magenta #e56eee, orange #f19837, gray #aaaaaa.
@@ -48,6 +51,8 @@ var Zoro = {
 		{ separator: true },
 		{ label: "Export questions", questions: true },
 		{ label: "Export from a section…", chooseSection: true },
+		{ separator: true },
+		{ label: "Sync current PDF to a Markdown file…", action: "sync" },
 		{ separator: true },
 		{ label: "Set figure image folder…", action: "setFolder" },
 	],
@@ -89,9 +94,10 @@ var Zoro = {
 			const item = doc.createXULElement("menuitem");
 			item.setAttribute("label", spec.label);
 			item.addEventListener("command", () => {
-				const run = spec.action === "setFolder"
-					? this.setImageFolder(window)
-					: this.exportCurrent(window, spec);
+				let run;
+				if (spec.action === "setFolder") run = this.setImageFolder(window);
+				else if (spec.action === "sync") run = this.syncCurrent(window);
+				else run = this.exportCurrent(window, spec);
 				Promise.resolve(run).catch((e) => {
 					this.log("action failed: " + e + "\n" + (e && e.stack));
 					this.popup(window, "Zoro — Error", String(e && e.message || e));
@@ -749,6 +755,249 @@ var Zoro = {
 			}
 		}
 		return { start: chosen.pageIndex, end };
+	},
+
+	// ---- Incremental sync to a Markdown file ----------------------------
+	//
+	// Each annotation is written as a block wrapped in HTML-comment markers
+	// keyed by the annotation's Zotero key. On sync we update/insert/remove
+	// only those marked blocks; everything else in the file (the user's own
+	// text, tables, images) is preserved verbatim. Do not edit inside a
+	// marked block — it is regenerated from Zotero.
+	async syncCurrent(window) {
+		const Zotero_Tabs = window.Zotero_Tabs;
+		if (!Zotero_Tabs || Zotero_Tabs.selectedType !== "reader") {
+			this.popup(window, "Zoro", "No PDF is open. Open a PDF in a reader tab first.");
+			return;
+		}
+		const reader = Zotero.Reader.getByTabID(Zotero_Tabs.selectedID);
+		if (!reader) {
+			this.popup(window, "Zoro", "Could not find the reader for the current tab.");
+			return;
+		}
+		const attachment = Zotero.Items.get(reader.itemID);
+		if (!attachment) {
+			this.popup(window, "Zoro", "Could not resolve the PDF attachment item.");
+			return;
+		}
+		if (typeof IOUtils === "undefined") {
+			this.popup(window, "Zoro", "File I/O is unavailable; cannot sync.");
+			return;
+		}
+
+		let annotations = attachment.getAnnotations();
+		annotations.sort((a, b) =>
+			String(a.annotationSortIndex).localeCompare(String(b.annotationSortIndex)));
+		const wanted = annotations.filter((a) =>
+			this.EXPORTED_TYPES.includes(a.annotationType));
+
+		let sectionMap = null;
+		try { sectionMap = await this.buildSectionMap(reader); }
+		catch (e) { this.log("section map failed: " + e); }
+
+		let imageMap = {};
+		try { imageMap = await this.saveImages(wanted, attachment, window); }
+		catch (e) { this.log("saveImages failed: " + e); }
+
+		const path = await this.getSyncFile(window, attachment);
+		if (!path) return; // cancelled
+
+		let existing = "";
+		try {
+			if (await IOUtils.exists(path)) existing = await IOUtils.readUTF8(path);
+		}
+		catch (e) { this.log("reading sync file failed: " + e); }
+
+		const result = this.mergeSync(existing, wanted, sectionMap, imageMap, attachment);
+
+		try {
+			await IOUtils.writeUTF8(path, result.content);
+		}
+		catch (e) {
+			this.popup(window, "Zoro — Error", "Could not write the file:\n" + e);
+			return;
+		}
+
+		this.popup(window, "Zoro",
+			`Synced — ${result.added} added, ${result.updated} updated, `
+			+ `${result.removed} removed.\n${path}`);
+	},
+
+	async getSyncFile(window, attachment) {
+		const pref = this.SYNC_FILE_PREF_PREFIX + attachment.key;
+		let path = "";
+		try { path = Zotero.Prefs.get(pref, true) || ""; }
+		catch (e) { /* not set */ }
+		if (path) return path;
+
+		const parent = attachment.parentItem;
+		const title = this.sanitizeFilename(
+			(parent ? parent.getDisplayTitle() : attachment.getDisplayTitle()) || "notes");
+		const chosen = await this.pickSaveFile(window,
+			"Choose or create the Markdown file to sync this PDF's annotations to",
+			title + ".md");
+		if (!chosen) return null;
+		Zotero.Prefs.set(pref, chosen, true);
+		return chosen;
+	},
+
+	async pickSaveFile(window, title, defaultName) {
+		const Ci = Components.interfaces;
+		const fp = Components.classes["@mozilla.org/filepicker;1"]
+			.createInstance(Ci.nsIFilePicker);
+		try { fp.init(window, title, Ci.nsIFilePicker.modeSave); }
+		catch (e) { fp.init(window.browsingContext, title, Ci.nsIFilePicker.modeSave); }
+		fp.defaultString = defaultName;
+		try { fp.appendFilter("Markdown", "*.md"); } catch (e) { /* ignore */ }
+		try {
+			const folder = Zotero.Prefs.get(this.IMAGE_FOLDER_PREF, true);
+			if (folder) {
+				const dir = Components.classes["@mozilla.org/file/local;1"]
+					.createInstance(Ci.nsIFile);
+				dir.initWithPath(folder);
+				if (dir.exists()) fp.displayDirectory = dir;
+			}
+		}
+		catch (e) { /* ignore */ }
+
+		const result = await new Promise((resolve) => fp.open(resolve));
+		if (result !== Ci.nsIFilePicker.returnOK
+			&& result !== Ci.nsIFilePicker.returnReplace) return null;
+		let p = fp.file.path;
+		if (!/\.md$/i.test(p)) p += ".md";
+		return p;
+	},
+
+	// Merge freshly generated annotation blocks into the existing file text,
+	// preserving everything that is not inside Zoro's markers.
+	mergeSync(existing, wanted, sectionMap, imageMap, attachment) {
+		const keysInOrder = wanted.map((a) => a.key);
+		const bodies = new Map();
+		for (const a of wanted) {
+			bodies.set(a.key, this.generateBlockBody(a, sectionMap, imageMap));
+		}
+		const keySet = new Set(keysInOrder);
+
+		let tokens = this.parseSyncTokens(existing);
+		if (!existing.trim()) {
+			const parent = attachment.parentItem;
+			const title = parent ? parent.getDisplayTitle() : attachment.getDisplayTitle();
+			tokens = [{ type: "user", text: `# Annotations — ${title}` }];
+		}
+
+		const out = [];
+		const present = new Set();
+		let removed = 0;
+		let updated = 0;
+		for (const t of tokens) {
+			if (t.type === "user") { out.push(t); continue; }
+			if (keySet.has(t.key)) {
+				present.add(t.key);
+				const body = bodies.get(t.key);
+				if (this.norm(body) !== this.norm(t.body)) updated++;
+				out.push({ type: "block", key: t.key, body });
+			}
+			else {
+				removed++; // annotation deleted in Zotero -> drop its block
+			}
+		}
+
+		let added = 0;
+		for (let i = 0; i < keysInOrder.length; i++) {
+			const key = keysInOrder[i];
+			if (present.has(key)) continue;
+			let predKey = null;
+			for (let j = i - 1; j >= 0; j--) {
+				if (present.has(keysInOrder[j])) { predKey = keysInOrder[j]; break; }
+			}
+			const token = { type: "block", key, body: bodies.get(key) };
+			if (predKey === null) {
+				const firstBlock = out.findIndex((tk) => tk.type === "block");
+				out.splice(firstBlock === -1 ? out.length : firstBlock, 0, token);
+			}
+			else {
+				const idx = out.findIndex((tk) => tk.type === "block" && tk.key === predKey);
+				out.splice(idx + 1, 0, token);
+			}
+			present.add(key);
+			added++;
+		}
+
+		return { content: this.renderSyncTokens(out), added, updated, removed };
+	},
+
+	parseSyncTokens(text) {
+		const tokens = [];
+		const re = /<!-- zoro:([A-Za-z0-9]+) -->\n([\s\S]*?)\n<!-- \/zoro:\1 -->/g;
+		let last = 0;
+		let m;
+		while ((m = re.exec(text)) !== null) {
+			if (m.index > last) {
+				tokens.push({ type: "user", text: text.slice(last, m.index) });
+			}
+			tokens.push({ type: "block", key: m[1], body: m[2] });
+			last = re.lastIndex;
+		}
+		if (last < text.length) {
+			tokens.push({ type: "user", text: text.slice(last) });
+		}
+		return tokens;
+	},
+
+	renderSyncTokens(tokens) {
+		const parts = [];
+		for (const t of tokens) {
+			if (t.type === "user") {
+				const s = t.text.trim();
+				if (s) parts.push(s);
+			}
+			else {
+				parts.push(`<!-- zoro:${t.key} -->\n${t.body.trim()}\n<!-- /zoro:${t.key} -->`);
+			}
+		}
+		return parts.join("\n\n") + "\n";
+	},
+
+	norm(s) {
+		return String(s).replace(/\s+/g, " ").trim();
+	},
+
+	// Inner Markdown for one annotation block (no surrounding markers). Section
+	// is shown inline in the heading so each block is self-contained.
+	generateBlockBody(a, sectionMap, imageMap) {
+		imageMap = imageMap || {};
+		const label = this.colorLabel(a.annotationColor);
+		const page = a.annotationPageLabel || this.pageFromPosition(a);
+		const pageStr = page ? `Page ${page}` : "Page ?";
+		const section = this.sectionFor(a, sectionMap);
+		const heading = section
+			? `### ${label} — ${pageStr} — ${section}`
+			: `### ${label} — ${pageStr}`;
+
+		const lines = [heading];
+
+		if (a.annotationType === "image") {
+			const img = imageMap[a.key];
+			if (img) {
+				lines.push(img.width ? `![[${img.name}|${img.width}]]` : `![[${img.name}]]`);
+			}
+		}
+		else {
+			const text = (a.annotationText || "").trim();
+			if (text) {
+				for (const ln of text.split(/\r?\n/)) lines.push(`> ${ln}`);
+			}
+		}
+
+		const comment = (a.annotationComment || "").trim();
+		const tags = this.getTagText(a);
+		if (comment || tags) {
+			lines.push("");
+			if (comment) lines.push(`**Comment:** ${comment}`);
+			if (tags) lines.push(`**Tags:** ${tags}`);
+		}
+
+		return lines.join("\n");
 	},
 
 	// ---- Figure / image annotations -------------------------------------
