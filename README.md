@@ -47,7 +47,10 @@ stable since Zotero 7).
   contains one or more `?`**
 - **Export from a section…** — a resizable dialog lists the PDF's outline with a
   checkbox per heading; tick **one or more** chapters/sections/subsections (with
-  "Select all"/"Clear") and export only those parts (nested subsections included)
+  "Select all"/"Clear") and export only those parts (nested subsections included).
+  The same dialog has **Category** checkboxes (Study note / Definition / Minor
+  question / Need clarification) to further limit the export to one or more
+  categories — leave them all unchecked to include every category.
 - **Set figure image folder…** — choose where exported figure PNGs are written
 
 ---

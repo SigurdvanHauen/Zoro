@@ -196,20 +196,26 @@ var Zoro = {
 					"This PDF has no table-of-contents outline, so there are no sections to choose from.");
 				return;
 			}
-			const indices = await this.promptSections(window, sectionMap);
-			if (!indices || indices.length === 0) return; // cancelled / nothing picked
+			const choice = await this.promptSectionSelection(window, sectionMap);
+			if (!choice || choice.sections.length === 0) return; // cancelled / none
 
-			const ranges = indices.map((i) => this.sectionRange(sectionMap, i));
+			const ranges = choice.sections.map((i) => this.sectionRange(sectionMap, i));
+			const colorSet = (choice.colors || []).map((c) => c.toLowerCase());
 			selected = wanted.filter((a) => {
 				const p = this.pageIndexOf(a);
-				return p !== null && ranges.some((r) => p >= r.start && p < r.end);
+				if (p === null || !ranges.some((r) => p >= r.start && p < r.end)) return false;
+				if (colorSet.length
+					&& !colorSet.includes(String(a.annotationColor || "").toLowerCase())) {
+					return false;
+				}
+				return true;
 			});
-			chosenTitle = indices.length === 1
-				? sectionMap[indices[0]].title
-				: `${indices.length} sections`;
+			chosenTitle = choice.sections.length === 1
+				? sectionMap[choice.sections[0]].title
+				: `${choice.sections.length} sections`;
 
 			if (selected.length === 0) {
-				this.popup(window, "Zoro", `No annotations in the selected section(s).`);
+				this.popup(window, "Zoro", `No matching annotations in the selected section(s).`);
 				return;
 			}
 		}
@@ -542,17 +548,17 @@ var Zoro = {
 		return current;
 	},
 
-	// Multi-select picker. Returns an array of chosen indices into sectionMap,
-	// or null if cancelled. Uses a custom resizable dialog with checkboxes;
-	// falls back to the single-select prompt if that can't be shown.
-	async promptSections(window, sectionMap) {
+	// Multi-select picker. Returns { sections: [indices], colors: [hex] } or null
+	// if cancelled. Uses a custom resizable dialog with checkboxes; falls back to
+	// the single-select prompt (no category filter) if that can't be shown.
+	async promptSectionSelection(window, sectionMap) {
 		try {
 			return await this._sectionDialog(window, sectionMap);
 		}
 		catch (e) {
 			this.log("custom section dialog failed, using single-select: " + e);
 			const idx = await this.promptSection(window, sectionMap);
-			return idx === null ? null : [idx];
+			return idx === null ? null : { sections: [idx], colors: [] };
 		}
 	},
 
@@ -590,6 +596,34 @@ var Zoro = {
 						"Choose one or more sections to export (subsections are included):";
 					header.style.padding = "10px 12px";
 					b.appendChild(header);
+
+					// Category (color) filter — optional.
+					const catWrap = doc.createElement("div");
+					catWrap.style.padding = "0 12px 8px";
+					const catTitle = doc.createElement("div");
+					catTitle.textContent =
+						"Categories (leave all unchecked to include every category):";
+					catTitle.style.margin = "0 0 4px";
+					catWrap.appendChild(catTitle);
+					const catBox = doc.createElement("div");
+					catBox.style.display = "flex";
+					catBox.style.flexWrap = "wrap";
+					catBox.style.gap = "14px";
+					const catChecks = [];
+					for (const [hex, label] of Object.entries(this.COLOR_LABELS)) {
+						const cl = doc.createElement("label");
+						cl.style.whiteSpace = "nowrap";
+						const cc = doc.createElement("input");
+						cc.type = "checkbox";
+						cc.value = hex;
+						cc.style.marginRight = "5px";
+						cl.appendChild(cc);
+						cl.appendChild(doc.createTextNode(label));
+						catBox.appendChild(cl);
+						catChecks.push(cc);
+					}
+					catWrap.appendChild(catBox);
+					b.appendChild(catWrap);
 
 					const listWrap = doc.createElement("div");
 					listWrap.style.flex = "1";
@@ -642,10 +676,13 @@ var Zoro = {
 					ok.style.marginLeft = "6px";
 					ok.style.fontWeight = "bold";
 					ok.onclick = () => {
-						const idx = checkboxes
+						const sections = checkboxes
 							.filter((c) => c.checked)
 							.map((c) => parseInt(c.value, 10));
-						done(idx);
+						const colors = catChecks
+							.filter((c) => c.checked)
+							.map((c) => c.value);
+						done({ sections, colors });
 						dlg.close();
 					};
 					right.appendChild(cancel);
